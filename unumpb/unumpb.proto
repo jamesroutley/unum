@@ -1,0 +1,23 @@
+syntax = "proto3";
+package unumpb;
+option go_package = "unumpb";
+
+service Unum {
+  rpc Ping (PingRequest) returns (PingResponse);
+
+  rpc SendSMS (SendSMSRequest) returns (SendSMSResponse);
+}
+
+message PingRequest {
+  string text = 1;
+}
+
+message PingResponse {
+  string text = 1;
+}
+
+message SendSMSRequest {
+    string body = 1;
+}
+
+message SendSMSResponse {}
