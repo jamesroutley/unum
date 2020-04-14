@@ -36,6 +36,8 @@ type Unum interface {
 	Ping(context.Context, *PingRequest) (*PingResponse, error)
 
 	SendSMS(context.Context, *SendSMSRequest) (*SendSMSResponse, error)
+
+	SendSlackMessage(context.Context, *SendSlackMessageRequest) (*SendSlackMessageResponse, error)
 }
 
 // ====================
@@ -44,7 +46,7 @@ type Unum interface {
 
 type unumProtobufClient struct {
 	client HTTPClient
-	urls   [2]string
+	urls   [3]string
 	opts   twirp.ClientOptions
 }
 
@@ -61,9 +63,10 @@ func NewUnumProtobufClient(addr string, client HTTPClient, opts ...twirp.ClientO
 	}
 
 	prefix := urlBase(addr) + UnumPathPrefix
-	urls := [2]string{
+	urls := [3]string{
 		prefix + "Ping",
 		prefix + "SendSMS",
+		prefix + "SendSlackMessage",
 	}
 
 	return &unumProtobufClient{
@@ -113,13 +116,33 @@ func (c *unumProtobufClient) SendSMS(ctx context.Context, in *SendSMSRequest) (*
 	return out, nil
 }
 
+func (c *unumProtobufClient) SendSlackMessage(ctx context.Context, in *SendSlackMessageRequest) (*SendSlackMessageResponse, error) {
+	ctx = ctxsetters.WithPackageName(ctx, "unumpb")
+	ctx = ctxsetters.WithServiceName(ctx, "Unum")
+	ctx = ctxsetters.WithMethodName(ctx, "SendSlackMessage")
+	out := new(SendSlackMessageResponse)
+	err := doProtobufRequest(ctx, c.client, c.opts.Hooks, c.urls[2], in, out)
+	if err != nil {
+		twerr, ok := err.(twirp.Error)
+		if !ok {
+			twerr = twirp.InternalErrorWith(err)
+		}
+		callClientError(ctx, c.opts.Hooks, twerr)
+		return nil, err
+	}
+
+	callClientResponseReceived(ctx, c.opts.Hooks)
+
+	return out, nil
+}
+
 // ================
 // Unum JSON Client
 // ================
 
 type unumJSONClient struct {
 	client HTTPClient
-	urls   [2]string
+	urls   [3]string
 	opts   twirp.ClientOptions
 }
 
@@ -136,9 +159,10 @@ func NewUnumJSONClient(addr string, client HTTPClient, opts ...twirp.ClientOptio
 	}
 
 	prefix := urlBase(addr) + UnumPathPrefix
-	urls := [2]string{
+	urls := [3]string{
 		prefix + "Ping",
 		prefix + "SendSMS",
+		prefix + "SendSlackMessage",
 	}
 
 	return &unumJSONClient{
@@ -174,6 +198,26 @@ func (c *unumJSONClient) SendSMS(ctx context.Context, in *SendSMSRequest) (*Send
 	ctx = ctxsetters.WithMethodName(ctx, "SendSMS")
 	out := new(SendSMSResponse)
 	err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[1], in, out)
+	if err != nil {
+		twerr, ok := err.(twirp.Error)
+		if !ok {
+			twerr = twirp.InternalErrorWith(err)
+		}
+		callClientError(ctx, c.opts.Hooks, twerr)
+		return nil, err
+	}
+
+	callClientResponseReceived(ctx, c.opts.Hooks)
+
+	return out, nil
+}
+
+func (c *unumJSONClient) SendSlackMessage(ctx context.Context, in *SendSlackMessageRequest) (*SendSlackMessageResponse, error) {
+	ctx = ctxsetters.WithPackageName(ctx, "unumpb")
+	ctx = ctxsetters.WithServiceName(ctx, "Unum")
+	ctx = ctxsetters.WithMethodName(ctx, "SendSlackMessage")
+	out := new(SendSlackMessageResponse)
+	err := doJSONRequest(ctx, c.client, c.opts.Hooks, c.urls[2], in, out)
 	if err != nil {
 		twerr, ok := err.(twirp.Error)
 		if !ok {
@@ -241,6 +285,9 @@ func (s *unumServer) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 		return
 	case "/twirp/unumpb.Unum/SendSMS":
 		s.serveSendSMS(ctx, resp, req)
+		return
+	case "/twirp/unumpb.Unum/SendSlackMessage":
+		s.serveSendSlackMessage(ctx, resp, req)
 		return
 	default:
 		msg := fmt.Sprintf("no handler for path %q", req.URL.Path)
@@ -485,6 +532,135 @@ func (s *unumServer) serveSendSMSProtobuf(ctx context.Context, resp http.Respons
 	}
 	if respContent == nil {
 		s.writeError(ctx, resp, twirp.InternalError("received a nil *SendSMSResponse and nil error while calling SendSMS. nil responses are not supported"))
+		return
+	}
+
+	ctx = callResponsePrepared(ctx, s.hooks)
+
+	respBytes, err := proto.Marshal(respContent)
+	if err != nil {
+		s.writeError(ctx, resp, wrapInternal(err, "failed to marshal proto response"))
+		return
+	}
+
+	ctx = ctxsetters.WithStatusCode(ctx, http.StatusOK)
+	resp.Header().Set("Content-Type", "application/protobuf")
+	resp.Header().Set("Content-Length", strconv.Itoa(len(respBytes)))
+	resp.WriteHeader(http.StatusOK)
+	if n, err := resp.Write(respBytes); err != nil {
+		msg := fmt.Sprintf("failed to write response, %d of %d bytes written: %s", n, len(respBytes), err.Error())
+		twerr := twirp.NewError(twirp.Unknown, msg)
+		callError(ctx, s.hooks, twerr)
+	}
+	callResponseSent(ctx, s.hooks)
+}
+
+func (s *unumServer) serveSendSlackMessage(ctx context.Context, resp http.ResponseWriter, req *http.Request) {
+	header := req.Header.Get("Content-Type")
+	i := strings.Index(header, ";")
+	if i == -1 {
+		i = len(header)
+	}
+	switch strings.TrimSpace(strings.ToLower(header[:i])) {
+	case "application/json":
+		s.serveSendSlackMessageJSON(ctx, resp, req)
+	case "application/protobuf":
+		s.serveSendSlackMessageProtobuf(ctx, resp, req)
+	default:
+		msg := fmt.Sprintf("unexpected Content-Type: %q", req.Header.Get("Content-Type"))
+		twerr := badRouteError(msg, req.Method, req.URL.Path)
+		s.writeError(ctx, resp, twerr)
+	}
+}
+
+func (s *unumServer) serveSendSlackMessageJSON(ctx context.Context, resp http.ResponseWriter, req *http.Request) {
+	var err error
+	ctx = ctxsetters.WithMethodName(ctx, "SendSlackMessage")
+	ctx, err = callRequestRouted(ctx, s.hooks)
+	if err != nil {
+		s.writeError(ctx, resp, err)
+		return
+	}
+
+	reqContent := new(SendSlackMessageRequest)
+	unmarshaler := jsonpb.Unmarshaler{AllowUnknownFields: true}
+	if err = unmarshaler.Unmarshal(req.Body, reqContent); err != nil {
+		s.writeError(ctx, resp, malformedRequestError("the json request could not be decoded"))
+		return
+	}
+
+	// Call service method
+	var respContent *SendSlackMessageResponse
+	func() {
+		defer ensurePanicResponses(ctx, resp, s.hooks)
+		respContent, err = s.Unum.SendSlackMessage(ctx, reqContent)
+	}()
+
+	if err != nil {
+		s.writeError(ctx, resp, err)
+		return
+	}
+	if respContent == nil {
+		s.writeError(ctx, resp, twirp.InternalError("received a nil *SendSlackMessageResponse and nil error while calling SendSlackMessage. nil responses are not supported"))
+		return
+	}
+
+	ctx = callResponsePrepared(ctx, s.hooks)
+
+	var buf bytes.Buffer
+	marshaler := &jsonpb.Marshaler{OrigName: true}
+	if err = marshaler.Marshal(&buf, respContent); err != nil {
+		s.writeError(ctx, resp, wrapInternal(err, "failed to marshal json response"))
+		return
+	}
+
+	ctx = ctxsetters.WithStatusCode(ctx, http.StatusOK)
+	respBytes := buf.Bytes()
+	resp.Header().Set("Content-Type", "application/json")
+	resp.Header().Set("Content-Length", strconv.Itoa(len(respBytes)))
+	resp.WriteHeader(http.StatusOK)
+
+	if n, err := resp.Write(respBytes); err != nil {
+		msg := fmt.Sprintf("failed to write response, %d of %d bytes written: %s", n, len(respBytes), err.Error())
+		twerr := twirp.NewError(twirp.Unknown, msg)
+		callError(ctx, s.hooks, twerr)
+	}
+	callResponseSent(ctx, s.hooks)
+}
+
+func (s *unumServer) serveSendSlackMessageProtobuf(ctx context.Context, resp http.ResponseWriter, req *http.Request) {
+	var err error
+	ctx = ctxsetters.WithMethodName(ctx, "SendSlackMessage")
+	ctx, err = callRequestRouted(ctx, s.hooks)
+	if err != nil {
+		s.writeError(ctx, resp, err)
+		return
+	}
+
+	buf, err := ioutil.ReadAll(req.Body)
+	if err != nil {
+		s.writeError(ctx, resp, wrapInternal(err, "failed to read request body"))
+		return
+	}
+	reqContent := new(SendSlackMessageRequest)
+	if err = proto.Unmarshal(buf, reqContent); err != nil {
+		s.writeError(ctx, resp, malformedRequestError("the protobuf request could not be decoded"))
+		return
+	}
+
+	// Call service method
+	var respContent *SendSlackMessageResponse
+	func() {
+		defer ensurePanicResponses(ctx, resp, s.hooks)
+		respContent, err = s.Unum.SendSlackMessage(ctx, reqContent)
+	}()
+
+	if err != nil {
+		s.writeError(ctx, resp, err)
+		return
+	}
+	if respContent == nil {
+		s.writeError(ctx, resp, twirp.InternalError("received a nil *SendSlackMessageResponse and nil error while calling SendSlackMessage. nil responses are not supported"))
 		return
 	}
 
@@ -1033,16 +1209,19 @@ func callClientError(ctx context.Context, h *twirp.ClientHooks, err twirp.Error)
 }
 
 var twirpFileDescriptor0 = []byte{
-	// 175 bytes of a gzipped FileDescriptorProto
+	// 221 bytes of a gzipped FileDescriptorProto
 	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xe2, 0x12, 0x2e, 0xcd, 0x2b, 0xcd,
 	0x2d, 0x48, 0xd2, 0x87, 0x50, 0x7a, 0x05, 0x45, 0xf9, 0x25, 0xf9, 0x42, 0x6c, 0x10, 0x9e, 0x92,
 	0x22, 0x17, 0x77, 0x40, 0x66, 0x5e, 0x7a, 0x50, 0x6a, 0x61, 0x69, 0x6a, 0x71, 0x89, 0x90, 0x10,
 	0x17, 0x4b, 0x49, 0x6a, 0x45, 0x89, 0x04, 0xa3, 0x02, 0xa3, 0x06, 0x67, 0x10, 0x98, 0xad, 0xa4,
 	0xc4, 0xc5, 0x03, 0x51, 0x52, 0x5c, 0x90, 0x9f, 0x57, 0x9c, 0x8a, 0x55, 0x8d, 0x0a, 0x17, 0x5f,
 	0x70, 0x6a, 0x5e, 0x4a, 0xb0, 0x6f, 0x30, 0x92, 0x49, 0x49, 0xf9, 0x29, 0x95, 0x30, 0x55, 0x20,
-	0xb6, 0x92, 0x20, 0x17, 0x3f, 0x5c, 0x15, 0xc4, 0x30, 0xa3, 0x52, 0x2e, 0x96, 0xd0, 0xbc, 0xd2,
-	0x5c, 0x21, 0x43, 0x2e, 0x16, 0x90, 0x25, 0x42, 0xc2, 0x7a, 0x50, 0x67, 0x22, 0xb9, 0x4a, 0x4a,
-	0x04, 0x55, 0x10, 0xea, 0x0e, 0x2b, 0x2e, 0x76, 0xa8, 0x69, 0x42, 0x62, 0x30, 0x05, 0xa8, 0x8e,
-	0x90, 0x12, 0xc7, 0x10, 0x87, 0xe8, 0x75, 0xe2, 0x88, 0x82, 0x06, 0x40, 0x12, 0x1b, 0x38, 0x3c,
-	0x8c, 0x01, 0x01, 0x00, 0x00, 0xff, 0xff, 0xfe, 0x5d, 0x34, 0xe5, 0x26, 0x01, 0x00, 0x00,
+	0xb6, 0x92, 0x20, 0x17, 0x3f, 0x5c, 0x15, 0xc4, 0x30, 0x25, 0x5d, 0x2e, 0x71, 0xb0, 0x50, 0x4e,
+	0x62, 0x72, 0xb6, 0x6f, 0x6a, 0x71, 0x71, 0x62, 0x7a, 0x2a, 0x3e, 0xb7, 0x48, 0x71, 0x49, 0x60,
+	0x2a, 0x87, 0x18, 0x65, 0x74, 0x86, 0x91, 0x8b, 0x25, 0x34, 0xaf, 0x34, 0x57, 0xc8, 0x90, 0x8b,
+	0x05, 0xe4, 0x60, 0x21, 0x61, 0x3d, 0xa8, 0x97, 0x91, 0x7c, 0x28, 0x25, 0x82, 0x2a, 0x08, 0xf5,
+	0x93, 0x15, 0x17, 0x3b, 0xd4, 0x65, 0x42, 0x62, 0x30, 0x05, 0xa8, 0x1e, 0x92, 0x12, 0xc7, 0x10,
+	0x87, 0xea, 0x0d, 0xe5, 0x12, 0x40, 0x77, 0x93, 0x90, 0x3c, 0x8a, 0x62, 0x4c, 0xcf, 0x49, 0x29,
+	0xe0, 0x56, 0x00, 0x31, 0xd6, 0x89, 0x23, 0x0a, 0x1a, 0x47, 0x49, 0x6c, 0xe0, 0x28, 0x33, 0x06,
+	0x04, 0x00, 0x00, 0xff, 0xff, 0xda, 0x88, 0x4e, 0x55, 0xc9, 0x01, 0x00, 0x00,
 }

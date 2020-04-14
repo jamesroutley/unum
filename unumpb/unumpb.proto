@@ -6,6 +6,8 @@ service Unum {
   rpc Ping (PingRequest) returns (PingResponse);
 
   rpc SendSMS (SendSMSRequest) returns (SendSMSResponse);
+
+  rpc SendSlackMessage (SendSlackMessageRequest) returns (SendSlackMessageResponse);
 }
 
 message PingRequest {
@@ -21,3 +23,9 @@ message SendSMSRequest {
 }
 
 message SendSMSResponse {}
+
+message SendSlackMessageRequest {
+    string text = 1;
+}
+
+message SendSlackMessageResponse {}

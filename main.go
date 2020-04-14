@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/jamesroutley/unum/cron"
 	"github.com/jamesroutley/unum/domain"
 	"github.com/jamesroutley/unum/server"
 	"github.com/jamesroutley/unum/unumpb"
@@ -20,8 +21,18 @@ func main() {
 	}
 	srv := server.Server{Config: config}
 	twirpHandler := unumpb.NewUnumServer(srv, nil)
-	log.Println("starting server")
-	http.ListenAndServe(":8080", twirpHandler)
+
+	if err := cron.Init(); err != nil {
+		log.Fatal(err)
+	}
+
+	port := config.Port
+	if port == "" {
+		port = "8080"
+	}
+	port = ":" + port
+	log.Printf("starting server on port %s\n", port)
+	http.ListenAndServe(port, twirpHandler)
 }
 
 func loadConfig() (*domain.Config, error) {
